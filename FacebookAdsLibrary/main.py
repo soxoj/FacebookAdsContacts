@@ -4,7 +4,6 @@ import requests
 from pprint import pprint
 
 
-
 class FacebookAdsLibrary:
     def __init__(self):
         self.reqs = requests.Session()
@@ -21,6 +20,14 @@ class FacebookAdsLibrary:
             'Sec-Fetch-User': '?1',
         })
         self.create_session()
+
+    def get_page_id_by_url(self, url):
+        response = self.reqs.get(url).text
+        page_id = re.search(r',\\\"page_id\\\":\\\"(\d+)\\\"', response)
+        if page_id:
+            return page_id.groups(0)[0]
+
+        return None
 
     def create_session(self):
         params = {
@@ -39,7 +46,6 @@ class FacebookAdsLibrary:
 
     def update_cookies(self, html):
         cookies = eval(html.split("_js_datr")[1].split(",")[1])
-        print(cookies)
         cookies = {
             'datr': cookies
         }
@@ -90,7 +96,7 @@ class FacebookAdsLibrary:
             'Path': f'/ads/library/async/search_typeahead/?ad_type=all&country=ALL&is_mobile=true&q={companyName}&session_id={self.session_id}',
             'Scheme': 'https',
             'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate',
             'Accept-Language': 'en,sl-SI;q=0.9,sl;q=0.8',
             'Content-Length': '610',
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -121,7 +127,7 @@ class FacebookAdsLibrary:
             "Path": f"/ads/library/async/search_ads/?session_id={self.session_id}&count=30&active_status=all&ad_type=all&countries[0]=ALL&view_all_page_id={company_id}&media_type=all&sort_data[direction]=desc&sort_data[mode]=relevancy_monthly_grouped&search_type=page",
             "Scheme": "https",
             "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "en,sl-SI;q=0.9,sl;q=0.8",
             "Content-Length": "571",
             "Content-Type": "application/x-www-form-urlencoded",
@@ -136,8 +142,8 @@ class FacebookAdsLibrary:
             'X-FB-LSD': 'zbcoPxeWkHXBwgt1gf3Y8D',
         }
         response = self.reqs.post(search_ads_url, headers=headers, data=self.data)
-        response = response.content.decode("utf-8")
-        response = response.replace('for (;;);{"__ar":1,', "{")
+        response.encoding = "utf-8"
+        response = response.text.replace('for (;;);{"__ar":1,', "{")
         try:
             return json.loads(response)
         except Exception:
@@ -161,8 +167,13 @@ class FacebookAdsLibrary:
 
     def get_title(self, snapshot, cards) -> str:
         ad_title = snapshot['title'] if (snapshot['title']) else None
-        if ad_title is None or "{{product" in ad_title:
+
+        if (not ad_title or "{{product" in ad_title) and cards:
             ad_title = cards[0]['title']
+
+        if snapshot.get('body', {}).get('markup', {}).get('__html'):
+            ad_title = snapshot['body']['markup']['__html'][:50] + '...' 
+
         return ad_title
         #ad_title = re.sub(r"\{\{.*?\}\}", "", ad_title)
 
@@ -210,9 +221,15 @@ class FacebookAdsLibrary:
     def parse_payload(self, data: list) -> dict:
         snapshot = data[0]['snapshot']
         cards = snapshot['cards']
+        fev_info = data[0]['fevInfo']
 
         ad_url = snapshot['link_url']
-        ad_url = re.sub(r"\{\{.*?\}\}", "", ad_url)
+        if ad_url:
+            ad_url = re.sub(r"\{\{.*?\}\}", "", ad_url)
+        elif snapshot.get('adArchiveID'):
+            ad_url = f'https://www.facebook.com/ads/library/?id={snapshot["adArchiveID"]}'
+        else:
+            ad_url = "unknown"
 
         ad_image = self.get_image(snapshot, cards)
         ad_video = self.get_video(snapshot, cards)
@@ -220,7 +237,7 @@ class FacebookAdsLibrary:
         ad_title = self.get_title(snapshot, cards)
         ad_body = self.get_body(snapshot, cards)
 
-        ad_caption, ad_cta_type = self.get_caption_cta_type(snapshot, cards)
+        # ad_caption, ad_cta_type = self.get_caption_cta_type(snapshot, cards)
         ad_format = snapshot["display_format"]
 
         return {
@@ -230,17 +247,26 @@ class FacebookAdsLibrary:
                 "Ad Body": ad_body,
                 "Ad Image": ad_image,
                 "Ad Video": ad_video,
-                "Ad Caption": ad_caption,
-                "Ad CTA Type": ad_cta_type
+                "Email": fev_info.get('email'),
+                "Phone": fev_info.get('phone'),
+                "Website": fev_info.get('website'),
+                "Address": fev_info.get('address'),
+                # "Ad Caption": ad_caption,
+                # "Ad CTA Type": ad_cta_type
             }
 
     def get_ads(self, company_id: str) -> dict | None:
         payload = self.get_payload(company_id)
-        if not payload:     return None
+        if not payload:
+            return None
+
         ads = self.get_page_data(payload, company_id)
-        if ads is None:     return None
+        if ads is None:
+            return None
+
         for data in payload['payload']['results']:
             ads['Ads'].append(self.parse_payload(data))
+
         return ads
 
     def __del__(self):
